@@ -274,7 +274,7 @@ class PerfectJobScraper:
                             'posting_date': posting_date
                         }
                         
-                        # Time-based filtering for actively recruiting jobs (posted within 48 hours)
+                        # Time-based filtering for actively recruiting jobs (posted within 168 hours)
                         if filter_active:
                             is_active, reason = self.is_recently_posted(job_data['posting_date'])
                             job_data['is_actively_recruiting'] = is_active
@@ -307,7 +307,7 @@ class PerfectJobScraper:
                 print(f"   Error on LinkedIn page {page + 1}: {e}")
                 continue
         
-        print(f"✅ LinkedIn: {len(jobs)} {'recently posted ' if filter_active else ''}jobs found{' (posted within 48 hours)' if filter_active else ''}")
+        print(f"✅ LinkedIn: {len(jobs)} {'recently posted ' if filter_active else ''}jobs found{' (posted within 7 days)' if filter_active else ''}")
         
         if fetch_descriptions and jobs:
             print(f"📄 Fetching full job descriptions for {len(jobs)} {'recent ' if filter_active else ''}jobs...")
@@ -886,7 +886,7 @@ class PerfectJobScraper:
         print("=" * 70)
         print("📊 Source: LinkedIn")
         if filter_active:
-            print("⏰ Time Filter: Jobs posted within last 48 hours only")
+            print("⏰ Time Filter: Jobs posted within last 7 days only")
         print("=" * 70)
         
         # Scrape LinkedIn with AI filtering
@@ -1034,7 +1034,7 @@ class PerfectJobScraper:
         pass
     
     def is_recently_posted(self, posting_date_text):
-        """Check if a job was posted within the last 48 hours"""
+        """Check if a job was posted within the last 168 hours (7 days)"""
         if not posting_date_text or posting_date_text == "Not specified":
             return False, "No posting date available"
         
@@ -1048,13 +1048,13 @@ class PerfectJobScraper:
             
             # Handle "yesterday"
             if 'yesterday' in text:
-                return True, "Posted yesterday (within 48 hours)"
+                return True, "Posted yesterday (within 7 days)"
             
             # Handle hours ago
             hours_match = re.search(r'(\d+)\s*(?:hour|hr)s?\s*ago', text)
             if hours_match:
                 hours = int(hours_match.group(1))
-                if hours <= 48:
+                if hours <= 168:
                     return True, f"Posted {hours} hours ago"
                 else:
                     return False, f"Posted {hours} hours ago (too old)"
@@ -1063,14 +1063,14 @@ class PerfectJobScraper:
             days_match = re.search(r'(\d+)\s*(?:day|d)s?\s*ago', text)
             if days_match:
                 days = int(days_match.group(1))
-                if days <= 2:
+                if days <= 7:
                     return True, f"Posted {days} days ago"
                 else:
                     return False, f"Posted {days} days ago (too old)"
             
             # Handle weeks/months/years (definitely too old)
             if any(word in text for word in ['week', 'month', 'year']):
-                return False, "Posted more than 2 days ago"
+                return False, "Posted more than 7 days ago"
             
             # If we can't parse it but it looks recent
             if any(word in text for word in ['now', 'recent', 'new']):
@@ -1173,7 +1173,7 @@ def run_perfect_job_scraper():
     print("   • AI-powered relevance scoring and ranking")
     print("   • Smart market insights generation")
     print("   • AI career growth potential analysis")
-    print("   • Time-based filtering (0-48 hours) for truly active jobs")
+    print("   • Time-based filtering (0-168 hours) for truly active jobs")
     print("")
     print("🌐 Job Source: LinkedIn")
     print("   • Comprehensive pagination (up to 10 pages)")
@@ -1225,11 +1225,11 @@ def run_perfect_job_scraper():
             print("⚡ Skipping full description fetching for faster results...")
         
         # Ask user if they want AI-powered filtering for actively recruiting jobs
-        filter_active = input("\n🎯 Filter for jobs posted within last 48 hours only? (y/n, default=y): ").strip().lower()
+        filter_active = input("\n🎯 Filter for jobs posted within last 7 days only? (y/n, default=y): ").strip().lower()
         filter_active = filter_active != 'n'  # Default to yes
         
         if filter_active:
-            print("⏰ Time-based filtering enabled - only jobs posted in last 48 hours will be scraped!")
+            print("⏰ Time-based filtering enabled - only jobs posted in last 7 days will be scraped!")
         else:
             print("📊 Scraping all jobs (no time-based filtering)...")
         
@@ -1367,7 +1367,7 @@ def run_perfect_job_scraper():
         print(f"   • Comprehensive salary statistics and analysis")
         print(f"   • Salary competitiveness assessment in AI scoring")
         if filter_active:
-            print(f"   • ⏰ Time-based filtering: Only jobs posted within last 48 hours")
+            print(f"   • ⏰ Time-based filtering: Only jobs posted within last 7 days")
         else:
             print(f"   • 📊 Comprehensive job scraping (all jobs included)")
         print(f"📄 Complete results saved to: '{filename}'")
