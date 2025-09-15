@@ -1,7 +1,5 @@
 crewai
 beautifulsoup4
-selenium
-webdriver-manager
 fake-useragent
 lxml
 pandas

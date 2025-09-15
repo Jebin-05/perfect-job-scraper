@@ -17,3 +17,14 @@ Thumbs.db
 
 # Environment files
 .env
+
+# Virtual environment
+venv/
+env/
+
+# Generated AI insights and job data
+ai_insights_*.txt
+ai_jobs_*.csv
+
+# Test files
+test_*.py

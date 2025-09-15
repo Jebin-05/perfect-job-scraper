@@ -1,20 +1,12 @@
-# Perfect Job Scraper - Ultimate Multi-Source Job Search Engine
-# Sources: Indeed, LinkedIn, Glassdoor, Monster, ZipRecruiter, CareerBuilder + APIs
-# APIs: Remotive, GitHub Jobs, RemoteOK, WeWorkRemotely, AngelList, FlexJobs, Dice
-# pip install crewai beautifulsoup4 selenium webdriver-manager fake-useragent lxml
+# Perfect Job Scraper - LinkedIn Job Search Engine
+# Source: LinkedIn
+# pip install crewai beautifulsoup4 fake-useragent lxml google-generativeai
 
-from crewai import Agent, Task, Crew, Process
+from crewai import Agent, Task, Task, Crew, Process
 import requests
 import pandas as pd
 import time
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 from fake_useragent import UserAgent
 import re
 import random
@@ -23,6 +15,15 @@ import json
 from urllib.parse import quote_plus
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import google.generativeai as genai
+import litellm
+
+# Load environment variables from .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, will use system environment variables
 
 # --- AI AGENTS CONFIGURATION ---
 # These AI agents use CrewAI to intelligently process and analyze job data
@@ -32,7 +33,8 @@ scraper_agent = Agent(
     goal="Extract comprehensive job data from multiple sources with AI-powered content understanding",
     backstory="You are an expert web scraper with deep understanding of job posting structures across different platforms. You can intelligently identify and extract relevant job information even when website layouts change.",
     verbose=True,
-    allow_delegation=False
+    allow_delegation=False,
+    llm="gemini/gemini-1.5-flash" if os.environ.get('GOOGLE_API_KEY') else None
 )
 
 analyzer_agent = Agent(
@@ -40,7 +42,8 @@ analyzer_agent = Agent(
     goal="Analyze job postings using AI to determine relevance and extract key insights",
     backstory="You are an AI-powered job analyst who understands job requirements, skills matching, and career progression. You can intelligently score job relevance based on complex criteria beyond simple keyword matching.",
     verbose=True,
-    allow_delegation=False
+    allow_delegation=False,
+    llm="gemini/gemini-1.5-flash" if os.environ.get('GOOGLE_API_KEY') else None
 )
 
 ranking_agent = Agent(
@@ -48,7 +51,8 @@ ranking_agent = Agent(
     goal="Use AI algorithms to rank jobs based on multiple factors including relevance, career growth potential, and market value",
     backstory="You are an AI career advisor who understands job market trends, salary expectations, and career progression paths. You can intelligently rank opportunities based on comprehensive analysis.",
     verbose=True,
-    allow_delegation=False
+    allow_delegation=False,
+    llm="gemini/gemini-1.5-flash" if os.environ.get('GOOGLE_API_KEY') else None
 )
 
 insight_agent = Agent(
@@ -56,7 +60,8 @@ insight_agent = Agent(
     goal="Provide AI-driven insights about job market trends, salary analysis, and career recommendations",
     backstory="You are an AI market analyst specializing in employment trends. You can analyze job data to provide intelligent insights about market conditions, salary trends, and career opportunities.",
     verbose=True,
-    allow_delegation=False
+    allow_delegation=False,
+    llm="gemini/gemini-1.5-flash" if os.environ.get('GOOGLE_API_KEY') else None
 )
 
 class PerfectJobScraper:
@@ -64,7 +69,6 @@ class PerfectJobScraper:
         self.user_agent = UserAgent()
         self.session = requests.Session()
         self.setup_session()
-        self.driver = None
         self.all_jobs = []
         
     def parse_salary_to_number(self, salary_text):
@@ -127,165 +131,13 @@ class PerfectJobScraper:
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
         })
-        
-    def setup_driver(self):
-        """Setup Chrome driver with stealth options"""
-        if self.driver is None:
-            chrome_options = Options()
-            chrome_options.add_argument("--headless")
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_argument("--disable-extensions")
-            chrome_options.add_argument("--disable-plugins")
-            chrome_options.add_argument("--disable-images")
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            chrome_options.add_argument(f"--user-agent={self.user_agent.random}")
-            
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            
-    def scrape_indeed_comprehensive(self, search_term, location, max_pages=10):
-        """Comprehensive Indeed scraping with multiple pages"""
-        jobs = []
-        self.setup_driver()
-        base_url = "https://www.indeed.com/jobs"
-        
-        print(f"🔍 Scraping Indeed for '{search_term}' in '{location}'...")
-        
-        for page in range(max_pages):
-            try:
-                start = page * 10
-                url = f"{base_url}?q={quote_plus(search_term)}&l={quote_plus(location)}&start={start}"
-                
-                self.driver.get(url)
-                time.sleep(random.uniform(2, 4))
-                
-                # Wait for job cards to load
-                try:
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, '[data-jk]'))
-                    )
-                except:
-                    print(f"   No more jobs found at page {page + 1}")
-                    break
-                
-                job_cards = self.driver.find_elements(By.CSS_SELECTOR, '[data-jk]')
-                
-                if not job_cards:
-                    print(f"   No jobs found on page {page + 1}")
-                    break
-                
-                page_jobs = 0
-                for card in job_cards:
-                    try:
-                        # Extract job details
-                        title_elem = card.find_elements(By.CSS_SELECTOR, 'h2 a span[title]')
-                        title = title_elem[0].get_attribute('title') if title_elem else \
-                               card.find_element(By.CSS_SELECTOR, 'h2 a span').text
-                        
-                        company_elem = card.find_elements(By.CSS_SELECTOR, '[data-testid="company-name"]')
-                        company = company_elem[0].text if company_elem else "Not specified"
-                        
-                        location_elem = card.find_elements(By.CSS_SELECTOR, '[data-testid="job-location"]')
-                        job_location = location_elem[0].text if location_elem else "Not specified"
-                        
-                        # Job link
-                        link_elem = card.find_element(By.CSS_SELECTOR, 'h2 a')
-                        job_link = "https://www.indeed.com" + link_elem.get_attribute('href')
-                        
-                        # Enhanced Salary Extraction
-                        salary = "Not specified"
-                        
-                        # Try multiple salary selectors for Indeed
-                        salary_selectors = [
-                            '[data-testid="attribute_snippet_testid"]',
-                            '.salary-snippet-container',
-                            '.attribute_snippet',
-                            '.salaryText',
-                            '[data-testid="job-salary"]',
-                            '.estimated-salary'
-                        ]
-                        
-                        for selector in salary_selectors:
-                            salary_elems = card.find_elements(By.CSS_SELECTOR, selector)
-                            for elem in salary_elems:
-                                text = elem.text.strip()
-                                if any(indicator in text.lower() for indicator in ['$', 'hour', 'year', 'month', 'salary', 'pay', 'wage']):
-                                    salary = text
-                                    break
-                            if salary != "Not specified":
-                                break
-                        
-                        # Enhanced summary with salary context
-                        summary_elem = card.find_elements(By.CSS_SELECTOR, '.slider_container .slider_item, [data-testid="job-snippet"]')
-                        summary = summary_elem[0].text if summary_elem else ""
-                        
-                        # Look for salary info in summary if not found elsewhere
-                        if salary == "Not specified" and summary:
-                            salary_patterns = [
-                                r'\$[\d,]+(?:\.\d{2})?(?:\s*[-–—]\s*\$[\d,]+(?:\.\d{2})?)?(?:\s*(?:per\s*)?(?:hour|hr|year|yr|month|mo|annually))?',
-                                r'[\d,]+k?(?:\s*[-–—]\s*[\d,]+k?)?\s*(?:per\s*)?(?:hour|hr|year|yr|month|mo|annually)',
-                                r'(?:up\s*to\s*)?\$[\d,]+(?:\.\d{2})?',
-                                r'salary:?\s*\$?[\d,]+(?:k|,000)?'
-                            ]
-                            
-                            for pattern in salary_patterns:
-                                match = re.search(pattern, summary, re.IGNORECASE)
-                                if match:
-                                    salary = match.group(0)
-                                    break
-                        
-                        # Job type
-                        job_type_elem = card.find_elements(By.CSS_SELECTOR, '[data-testid="attribute_snippet_testid"]')
-                        job_type = ""
-                        for elem in job_type_elem:
-                            text = elem.text.lower()
-                            if any(t in text for t in ['full-time', 'part-time', 'contract', 'internship']):
-                                job_type = elem.text
-                                break
-                        
-                        job_data = {
-                            'title': title.strip(),
-                            'company': company.strip(),
-                            'location': job_location.strip(),
-                            'salary': salary.strip(),
-                            'job_type': job_type.strip(),
-                            'summary': summary.strip(),
-                            'url': job_link,
-                            'source': 'Indeed',
-                            'scraped_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-                            'search_term': search_term,
-                            'search_location': location
-                        }
-                        
-                        jobs.append(job_data)
-                        page_jobs += 1
-                        
-                    except Exception as e:
-                        continue
-                
-                print(f"   Page {page + 1}: Found {page_jobs} jobs")
-                
-                if page_jobs == 0:
-                    break
-                    
-                # Random delay between pages
-                time.sleep(random.uniform(2, 5))
-                
-            except Exception as e:
-                print(f"   Error on page {page + 1}: {e}")
-                continue
-        
-        print(f"✅ Indeed: {len(jobs)} total jobs found")
-        return jobs
     
-    def scrape_linkedin_comprehensive(self, search_term, location, max_pages=5):
-        """Comprehensive LinkedIn scraping"""
+    def scrape_linkedin_comprehensive(self, search_term, location, max_pages=5, fetch_descriptions=True, filter_active=True):
+        """Comprehensive LinkedIn scraping with AI-powered active recruitment filtering"""
         jobs = []
         print(f"🔍 Scraping LinkedIn for '{search_term}' in '{location}'...")
+        if filter_active:
+            print("🤖 AI will filter for actively recruiting jobs during scraping...")
         
         for page in range(max_pages):
             try:
@@ -354,7 +206,45 @@ class PerfectJobScraper:
                                      card.find('p', class_='result-card__snippet')
                         summary = summary_elem.text.strip() if summary_elem else ""
                         
-                        # If no salary found, look in summary
+                        # Extract posting date
+                        posting_date = "Not specified"
+                        date_selectors = [
+                            'time', '.job-search-card__listdate', '.result-card__listdate',
+                            '[data-test="job-age"]', '.job-age', '.posted-date'
+                        ]
+                        
+                        for selector in date_selectors:
+                            date_elem = card.find(selector.replace('.', '').replace('[data-test="job-age"]', '')) or \
+                                       card.find(attrs={'data-test': 'job-age'})
+                            if date_elem:
+                                posting_date = date_elem.text.strip()
+                                break
+                        
+                        # If no date found, look in aria-label or other attributes
+                        if posting_date == "Not specified":
+                            time_elem = card.find('time')
+                            if time_elem:
+                                posting_date = time_elem.get('datetime', time_elem.text.strip())
+                        
+                        # If still no date, try to find any text containing time/date info
+                        if posting_date == "Not specified":
+                            date_patterns = [
+                                r'\d+\s*(?:hour|hr)s?\s*ago',
+                                r'\d+\s*(?:day|d)s?\s*ago', 
+                                r'\d+\s*(?:week|w)s?\s*ago',
+                                r'\d+\s*(?:month|m)s?\s*ago',
+                                r'\d+\s*(?:year|y)s?\s*ago',
+                                r'just posted',
+                                r'today',
+                                r'yesterday'
+                            ]
+                            
+                            card_text = card.get_text().lower()
+                            for pattern in date_patterns:
+                                match = re.search(pattern, card_text, re.IGNORECASE)
+                                if match:
+                                    posting_date = match.group(0)
+                                    break
                         if salary == "Not specified" and summary:
                             salary_patterns = [
                                 r'\$[\d,]+(?:\.\d{2})?(?:\s*[-–—]\s*\$[\d,]+(?:\.\d{2})?)?(?:\s*(?:per\s*)?(?:hour|hr|year|yr|month|mo|annually))?',
@@ -375,20 +265,38 @@ class PerfectJobScraper:
                             'salary': salary,
                             'job_type': "Not specified",
                             'summary': summary,
+                            'full_description': "",  # Will be filled later
                             'url': job_link,
                             'source': 'LinkedIn',
                             'scraped_at': time.strftime('%Y-%m-%d %H:%M:%S'),
                             'search_term': search_term,
-                            'search_location': location
+                            'search_location': location,
+                            'posting_date': posting_date
                         }
                         
-                        jobs.append(job_data)
-                        page_jobs += 1
+                        # Time-based filtering for actively recruiting jobs (posted within 48 hours)
+                        if filter_active:
+                            is_active, reason = self.is_recently_posted(job_data['posting_date'])
+                            job_data['is_actively_recruiting'] = is_active
+                            job_data['active_recruiting_reasons'] = reason
+                            
+                            if is_active:
+                                jobs.append(job_data)
+                                page_jobs += 1
+                                print(f"   ✅ Recent job ({reason}): {title} at {company}")
+                            else:
+                                print(f"   ❌ Too old ({reason}): {title} at {company}")
+                        else:
+                            # No filtering - add all jobs
+                            job_data['is_actively_recruiting'] = True  # Assume active for non-filtered jobs
+                            job_data['active_recruiting_reasons'] = 'No filtering applied'
+                            jobs.append(job_data)
+                            page_jobs += 1
                         
                     except Exception as e:
                         continue
                 
-                print(f"   Page {page + 1}: Found {page_jobs} jobs")
+                print(f"   Page {page + 1}: Found {page_jobs} active recruiting jobs")
                 
                 if page_jobs == 0:
                     break
@@ -399,401 +307,162 @@ class PerfectJobScraper:
                 print(f"   Error on LinkedIn page {page + 1}: {e}")
                 continue
         
-        print(f"✅ LinkedIn: {len(jobs)} total jobs found")
-        return jobs
-    
-    def scrape_glassdoor_comprehensive(self, search_term, location, max_pages=5):
-        """Comprehensive Glassdoor scraping"""
-        jobs = []
-        print(f"🔍 Scraping Glassdoor for '{search_term}' in '{location}'...")
+        print(f"✅ LinkedIn: {len(jobs)} {'recently posted ' if filter_active else ''}jobs found{' (posted within 48 hours)' if filter_active else ''}")
         
-        try:
-            for page in range(1, max_pages + 1):
-                url = f"https://www.glassdoor.com/Job/jobs.htm?sc.keyword={quote_plus(search_term)}&locT=C&locId=1&p={page}"
+        if fetch_descriptions and jobs:
+            print(f"📄 Fetching full job descriptions for {len(jobs)} {'recent ' if filter_active else ''}jobs...")
+            
+            # Update jobs with full descriptions
+            for i, job in enumerate(jobs):
+                if i > 0 and i % 10 == 0:  # Progress update every 10 jobs
+                    print(f"   Progress: {i}/{len(jobs)} job descriptions fetched")
                 
-                headers = {
-                    'User-Agent': self.user_agent.random,
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                }
-                
-                response = self.session.get(url, headers=headers, timeout=10)
-                soup = BeautifulSoup(response.content, 'html.parser')
-                
-                # Multiple selectors for different Glassdoor layouts
-                job_cards = soup.find_all('li', {'data-test': 'jobListing'}) or \
-                           soup.find_all('div', {'data-test': 'jobListing'}) or \
-                           soup.find_all('li', class_='react-job-listing')
-                
-                if not job_cards:
-                    break
-                
-                page_jobs = 0
-                for card in job_cards:
+                if job['url'] and job['url'] != "Not specified":
                     try:
-                        # Title
-                        title_elem = card.find('a', {'data-test': 'job-title'}) or \
-                                   card.find('a', class_='jobLink')
-                        title = title_elem.text.strip() if title_elem else "Not specified"
+                        # Add delay between requests
+                        time.sleep(random.uniform(3, 6))
                         
-                        # Company
-                        company_elem = card.find('span', {'data-test': 'employer-name'}) or \
-                                     card.find('div', class_='jobHeader')
-                        company = company_elem.text.strip() if company_elem else "Not specified"
-                        
-                        # Location
-                        location_elem = card.find('span', {'data-test': 'job-location'}) or \
-                                      card.find('span', class_='loc')
-                        job_location = location_elem.text.strip() if location_elem else location
-                        
-                        # Salary
-                        salary_elem = card.find('span', {'data-test': 'detailSalary'})
-                        salary = salary_elem.text.strip() if salary_elem else "Not specified"
-                        
-                        # Link
-                        link_elem = title_elem
-                        job_link = f"https://www.glassdoor.com{link_elem.get('href')}" if link_elem and link_elem.get('href') else "Not specified"
-                        
-                        job_data = {
-                            'title': title,
-                            'company': company,
-                            'location': job_location,
-                            'salary': salary,
-                            'job_type': "Not specified",
-                            'summary': "",
-                            'url': job_link,
-                            'source': 'Glassdoor',
-                            'scraped_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-                            'search_term': search_term,
-                            'search_location': location
+                        headers = {
+                            'User-Agent': self.user_agent.random,
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.5',
+                            'Accept-Encoding': 'gzip, deflate',
+                            'Connection': 'keep-alive',
                         }
                         
-                        jobs.append(job_data)
-                        page_jobs += 1
+                        job_response = self.session.get(job['url'], headers=headers, timeout=15)
+                        job_soup = BeautifulSoup(job_response.content, 'html.parser')
+                        
+                        # Try multiple selectors for job description
+                        description_selectors = [
+                            'div[data-test-id="job-description"]',
+                            'div.job-description',
+                            'div.description',
+                            'div[data-test="job-description"]',
+                            'div.show-more-less-html__markup',
+                            'div[data-test-id="description"]',
+                            'div[data-test="job-details"]',
+                            'div.job-details__content',
+                            'div[data-test-id="job-details"]'
+                        ]
+                        
+                        full_description = ""
+                        for selector in description_selectors:
+                            desc_elem = job_soup.select_one(selector)
+                            if desc_elem:
+                                # Get all text content and clean it up
+                                full_description = desc_elem.get_text(separator='\n', strip=True)
+                                if full_description and len(full_description) > 50:  # Ensure we got meaningful content
+                                    break
+                        
+                        # If still no description, try to find any large text block
+                        if not full_description or len(full_description) < 50:
+                            # Look for the main content area
+                            main_content = job_soup.find('main') or job_soup.find('div', class_='job-view-layout')
+                            if main_content:
+                                paragraphs = main_content.find_all('p')
+                                if paragraphs:
+                                    full_description = '\n'.join([p.get_text(strip=True) for p in paragraphs if len(p.get_text(strip=True)) > 20])
+                        
+                        # Clean up the description
+                        if full_description:
+                            # Remove excessive whitespace
+                            full_description = re.sub(r'\n\s*\n', '\n\n', full_description)
+                            full_description = re.sub(r'\s+', ' ', full_description)
+                            full_description = full_description.strip()
+                        
+                        job['full_description'] = full_description
                         
                     except Exception as e:
-                        continue
-                
-                print(f"   Page {page}: Found {page_jobs} jobs")
-                
-                if page_jobs == 0:
-                    break
-                    
-                time.sleep(random.uniform(3, 6))
-                
-        except Exception as e:
-            print(f"   Error scraping Glassdoor: {e}")
+                        print(f"   Warning: Could not fetch full description for {job['title']}: {e}")
+                        job['full_description'] = "Could not retrieve full job description"
+                else:
+                    job['full_description'] = "No job URL available"
+            
+            print(f"✅ Full descriptions fetched for {len(jobs)} jobs")
+        else:
+            print(f"⚡ Skipping full description fetching...")
+            # Add empty full_description to all jobs
+            for job in jobs:
+                job['full_description'] = "Full description not fetched"
         
-        print(f"✅ Glassdoor: {len(jobs)} total jobs found")
         return jobs
-    
-    def scrape_monster_comprehensive(self, search_term, location, max_pages=3):
-        """Comprehensive Monster scraping"""
-        jobs = []
-        print(f"🔍 Scraping Monster for '{search_term}' in '{location}'...")
+        """Filter jobs to show only actively recruiting positions"""
+        actively_recruiting = []
         
-        try:
-            for page in range(max_pages):
-                page_jobs = 0
-                url = f"https://www.monster.com/jobs/search?q={quote_plus(search_term)}&where={quote_plus(location)}&page={page+1}"
-                
-                self.driver.get(url)
-                time.sleep(random.uniform(3, 5))
-                
-                # Wait for job cards to load
-                try:
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid='svx-job-card'], .job-cardstyle__JobCardContainer, .jobcard"))
-                    )
-                except:
-                    print(f"   No jobs found on Monster page {page + 1}")
-                    continue
-                
-                # Find job cards using multiple selectors
-                job_cards = self.driver.find_elements(By.CSS_SELECTOR, "[data-testid='svx-job-card'], .job-cardstyle__JobCardContainer, .jobcard, .job-card")
-                
-                for card in job_cards[:15]:  # Limit per page
-                    try:
-                        # Extract job details
-                        title_elem = card.find_element(By.CSS_SELECTOR, "h2 a, .jobTitle a, [data-testid='svx-job-title'] a")
-                        title = title_elem.text.strip()
-                        job_link = title_elem.get_attribute('href')
-                        
-                        try:
-                            company_elem = card.find_element(By.CSS_SELECTOR, "[data-testid='svx-job-company'], .company, .companyName")
-                            company = company_elem.text.strip()
-                        except:
-                            company = "Not specified"
-                        
-                        try:
-                            location_elem = card.find_element(By.CSS_SELECTOR, "[data-testid='svx-job-location'], .location, .jobLocation")
-                            job_location = location_elem.text.strip()
-                        except:
-                            job_location = location
-                        
-                        try:
-                            summary_elem = card.find_element(By.CSS_SELECTOR, ".summary, .jobSnippet, [data-testid='svx-job-summary']")
-                            summary = summary_elem.text.strip()[:300] + "..."
-                        except:
-                            summary = "No description available"
-                        
-                        # Enhanced salary extraction for Monster
-                        salary = "Not specified"
-                        try:
-                            salary_elem = card.find_element(By.CSS_SELECTOR, ".salary, .jobSalary, [data-testid='svx-job-salary'], .salary-range")
-                            salary = salary_elem.text.strip()
-                        except:
-                            # Look for salary in summary if not found elsewhere
-                            if summary and summary != "No description available":
-                                salary_patterns = [
-                                    r'\$[\d,]+(?:\.\d{2})?(?:\s*[-–—]\s*\$[\d,]+(?:\.\d{2})?)?(?:\s*(?:per\s*)?(?:hour|hr|year|yr|month|mo|annually))?',
-                                    r'[\d,]+k?(?:\s*[-–—]\s*[\d,]+k?)?\s*(?:per\s*)?(?:hour|hr|year|yr|month|mo|annually)',
-                                    r'salary:?\s*\$?[\d,]+(?:k|,000)?'
-                                ]
-                                
-                                for pattern in salary_patterns:
-                                    match = re.search(pattern, summary, re.IGNORECASE)
-                                    if match:
-                                        salary = match.group(0)
-                                        break
-                        
-                        job_data = {
-                            'title': title,
-                            'company': company,
-                            'location': job_location,
-                            'salary': salary,
-                            'job_type': 'Not specified',
-                            'summary': summary,
-                            'url': job_link if job_link.startswith('http') else f"https://www.monster.com{job_link}",
-                            'source': 'Monster',
-                            'scraped_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-                            'search_term': search_term,
-                            'search_location': location
-                        }
-                        
-                        jobs.append(job_data)
-                        page_jobs += 1
-                        
-                    except Exception as e:
-                        continue
-                
-                print(f"   Page {page + 1}: Found {page_jobs} jobs")
-                
-                if page_jobs == 0:
+        print(f"🎯 Filtering for actively recruiting jobs...")
+        
+        for job in jobs:
+            is_active = False
+            reasons = []
+            
+            # Check full description for active recruiting indicators
+            full_desc = job.get('full_description', '').lower()
+            summary = job.get('summary', '').lower()
+            title = job.get('title', '').lower()
+            
+            # Keywords that indicate active recruiting
+            active_keywords = [
+                'actively recruiting', 'actively hiring', 'urgent hiring', 'immediate opening',
+                'we are hiring', 'join our team', 'exciting opportunity', 'growing team',
+                'expand our team', 'looking for', 'seeking', 'hiring now', 'apply now',
+                'immediate start', 'quick hire', 'fast track', 'priority hire',
+                'high priority', 'critical role', 'key position', 'strategic hire'
+            ]
+            
+            # Check if any active keywords are present
+            for keyword in active_keywords:
+                if keyword in full_desc or keyword in summary or keyword in title:
+                    is_active = True
+                    reasons.append(f"Contains '{keyword}'")
                     break
-                    
-                time.sleep(random.uniform(3, 6))
-                
-        except Exception as e:
-            print(f"   Error scraping Monster: {e}")
-        
-        print(f"✅ Monster: {len(jobs)} total jobs found")
-        return jobs
-    
-    def scrape_ziprecruiter_comprehensive(self, search_term, location, max_pages=3):
-        """Comprehensive ZipRecruiter scraping"""
-        jobs = []
-        print(f"🔍 Scraping ZipRecruiter for '{search_term}' in '{location}'...")
-        
-        try:
-            for page in range(max_pages):
-                page_jobs = 0
-                url = f"https://www.ziprecruiter.com/jobs-search?search={quote_plus(search_term)}&location={quote_plus(location)}&page={page+1}"
-                
-                self.driver.get(url)
-                time.sleep(random.uniform(3, 5))
-                
-                # Wait for job cards to load
-                try:
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, ".job_content, [data-testid='job-card'], .jobList-item"))
-                    )
-                except:
-                    print(f"   No jobs found on ZipRecruiter page {page + 1}")
-                    continue
-                
-                # Find job cards
-                job_cards = self.driver.find_elements(By.CSS_SELECTOR, ".job_content, [data-testid='job-card'], .jobList-item, .job-card")
-                
-                for card in job_cards[:15]:  # Limit per page
-                    try:
-                        # Extract job details
-                        title_elem = card.find_element(By.CSS_SELECTOR, "h2 a, .job_title a, [data-testid='job-title'] a")
-                        title = title_elem.text.strip()
-                        job_link = title_elem.get_attribute('href')
-                        
-                        try:
-                            company_elem = card.find_element(By.CSS_SELECTOR, ".company, .company_name, [data-testid='job-company']")
-                            company = company_elem.text.strip()
-                        except:
-                            company = "Not specified"
-                        
-                        try:
-                            location_elem = card.find_element(By.CSS_SELECTOR, ".location, .job_location, [data-testid='job-location']")
-                            job_location = location_elem.text.strip()
-                        except:
-                            job_location = location
-                        
-                        try:
-                            summary_elem = card.find_element(By.CSS_SELECTOR, ".job_snippet, .summary, [data-testid='job-summary']")
-                            summary = summary_elem.text.strip()[:300] + "..."
-                        except:
-                            summary = "No description available"
-                        
-                        # Enhanced salary extraction for ZipRecruiter
-                        salary = "Not specified"
-                        try:
-                            salary_elem = card.find_element(By.CSS_SELECTOR, ".salary, .job_salary, [data-testid='job-salary'], .salary-range, .compensation")
-                            salary = salary_elem.text.strip()
-                        except:
-                            # Look for salary in summary if not found elsewhere
-                            if summary and summary != "No description available":
-                                salary_patterns = [
-                                    r'\$[\d,]+(?:\.\d{2})?(?:\s*[-–—]\s*\$[\d,]+(?:\.\d{2})?)?(?:\s*(?:per\s*)?(?:hour|hr|year|yr|month|mo|annually))?',
-                                    r'[\d,]+k?(?:\s*[-–—]\s*[\d,]+k?)?\s*(?:per\s*)?(?:hour|hr|year|yr|month|mo|annually)',
-                                    r'salary:?\s*\$?[\d,]+(?:k|,000)?'
-                                ]
-                                
-                                for pattern in salary_patterns:
-                                    match = re.search(pattern, summary, re.IGNORECASE)
-                                    if match:
-                                        salary = match.group(0)
-                                        break
-                        
-                        job_data = {
-                            'title': title,
-                            'company': company,
-                            'location': job_location,
-                            'salary': salary,
-                            'job_type': 'Not specified',
-                            'summary': summary,
-                            'url': job_link if job_link.startswith('http') else f"https://www.ziprecruiter.com{job_link}",
-                            'source': 'ZipRecruiter',
-                            'scraped_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-                            'search_term': search_term,
-                            'search_location': location
-                        }
-                        
-                        jobs.append(job_data)
-                        page_jobs += 1
-                        
-                    except Exception as e:
-                        continue
-                
-                print(f"   Page {page + 1}: Found {page_jobs} jobs")
-                
-                if page_jobs == 0:
+            
+            # Check for recent posting indicators
+            if 'day' in full_desc or 'week' in full_desc or 'new' in full_desc:
+                if not is_active:  # Don't override if already marked active
+                    is_active = True
+                    reasons.append("Recent posting indicators")
+            
+            # Check for company growth indicators
+            growth_indicators = [
+                'growing company', 'scaling', 'expansion', 'series a', 'series b', 'series c',
+                'funding', 'investment', 'startup', 'scale up', 'high growth'
+            ]
+            
+            for indicator in growth_indicators:
+                if indicator in full_desc or indicator in summary:
+                    if not is_active:
+                        is_active = True
+                        reasons.append(f"Growth indicator: {indicator}")
                     break
-                    
-                time.sleep(random.uniform(3, 6))
-                
-        except Exception as e:
-            print(f"   Error scraping ZipRecruiter: {e}")
-        
-        print(f"✅ ZipRecruiter: {len(jobs)} total jobs found")
-        return jobs
-    
-    def scrape_careerbuilder_comprehensive(self, search_term, location, max_pages=3):
-        """Comprehensive CareerBuilder scraping"""
-        jobs = []
-        print(f"🔍 Scraping CareerBuilder for '{search_term}' in '{location}'...")
-        
-        try:
-            for page in range(max_pages):
-                page_jobs = 0
-                url = f"https://www.careerbuilder.com/jobs?keywords={quote_plus(search_term)}&location={quote_plus(location)}&page_number={page+1}"
-                
-                self.driver.get(url)
-                time.sleep(random.uniform(3, 5))
-                
-                # Wait for job cards to load
-                try:
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid='job-card'], .data-results-content, .job-row"))
-                    )
-                except:
-                    print(f"   No jobs found on CareerBuilder page {page + 1}")
-                    continue
-                
-                # Find job cards
-                job_cards = self.driver.find_elements(By.CSS_SELECTOR, "[data-testid='job-card'], .data-results-content, .job-row, .job-card")
-                
-                for card in job_cards[:15]:  # Limit per page
-                    try:
-                        # Extract job details
-                        title_elem = card.find_element(By.CSS_SELECTOR, "h2 a, .job-title a, [data-testid='job-title'] a")
-                        title = title_elem.text.strip()
-                        job_link = title_elem.get_attribute('href')
-                        
-                        try:
-                            company_elem = card.find_element(By.CSS_SELECTOR, ".company-name, .data-details span, [data-testid='job-company']")
-                            company = company_elem.text.strip()
-                        except:
-                            company = "Not specified"
-                        
-                        try:
-                            location_elem = card.find_element(By.CSS_SELECTOR, ".job-location, .data-details .location, [data-testid='job-location']")
-                            job_location = location_elem.text.strip()
-                        except:
-                            job_location = location
-                        
-                        try:
-                            summary_elem = card.find_element(By.CSS_SELECTOR, ".job-summary, .data-details p, [data-testid='job-summary']")
-                            summary = summary_elem.text.strip()[:300] + "..."
-                        except:
-                            summary = "No description available"
-                        
-                        # Enhanced salary extraction for CareerBuilder
-                        salary = "Not specified"
-                        try:
-                            salary_elem = card.find_element(By.CSS_SELECTOR, ".salary, .data-details .salary, [data-testid='job-salary'], .pay-range")
-                            salary = salary_elem.text.strip()
-                        except:
-                            # Look for salary in summary if not found elsewhere
-                            if summary and summary != "No description available":
-                                salary_patterns = [
-                                    r'\$[\d,]+(?:\.\d{2})?(?:\s*[-–—]\s*\$[\d,]+(?:\.\d{2})?)?(?:\s*(?:per\s*)?(?:hour|hr|year|yr|month|mo|annually))?',
-                                    r'[\d,]+k?(?:\s*[-–—]\s*[\d,]+k?)?\s*(?:per\s*)?(?:hour|hr|year|yr|month|mo|annually)',
-                                    r'salary:?\s*\$?[\d,]+(?:k|,000)?'
-                                ]
-                                
-                                for pattern in salary_patterns:
-                                    match = re.search(pattern, summary, re.IGNORECASE)
-                                    if match:
-                                        salary = match.group(0)
-                                        break
-                        
-                        job_data = {
-                            'title': title,
-                            'company': company,
-                            'location': job_location,
-                            'salary': salary,
-                            'job_type': 'Not specified',
-                            'summary': summary,
-                            'url': job_link if job_link.startswith('http') else f"https://www.careerbuilder.com{job_link}",
-                            'source': 'CareerBuilder',
-                            'scraped_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-                            'search_term': search_term,
-                            'search_location': location
-                        }
-                        
-                        jobs.append(job_data)
-                        page_jobs += 1
-                        
-                    except Exception as e:
-                        continue
-                
-                print(f"   Page {page + 1}: Found {page_jobs} jobs")
-                
-                if page_jobs == 0:
+            
+            # Check for competitive indicators
+            competitive_indicators = [
+                'competitive salary', 'excellent benefits', 'great culture', 'innovative',
+                'cutting edge', 'market leader', 'industry leader', 'top company'
+            ]
+            
+            for indicator in competitive_indicators:
+                if indicator in full_desc or indicator in summary:
+                    if not is_active:
+                        is_active = True
+                        reasons.append(f"Competitive indicator: {indicator}")
                     break
-                    
-                time.sleep(random.uniform(3, 6))
-                
-        except Exception as e:
-            print(f"   Error scraping CareerBuilder: {e}")
+            
+            # If job has a detailed description (longer than 200 chars), consider it active
+            if len(full_desc) > 200 and not is_active:
+                is_active = True
+                reasons.append("Detailed job description")
+            
+            # Store the active status and reasons
+            job['is_actively_recruiting'] = is_active
+            job['active_recruiting_reasons'] = reasons
+            
+            if is_active:
+                actively_recruiting.append(job)
         
-        print(f"✅ CareerBuilder: {len(jobs)} total jobs found")
-        return jobs
+        print(f"✅ Found {len(actively_recruiting)} actively recruiting jobs out of {len(jobs)} total jobs")
+        return actively_recruiting
     
     def scrape_remote_apis(self, search_term, location):
         """Scrape from multiple remote job APIs and specialized platforms"""
@@ -1209,54 +878,28 @@ class PerfectJobScraper:
             jobs_df['ai_rank'] = jobs_df['rank']
             return jobs_df
     
-    def scrape_all_sources(self, search_term, location, keywords):
-        """Scrape all sources comprehensively"""
+    def scrape_all_sources(self, search_term, location, keywords, fetch_descriptions=True, filter_active=True):
+        """Scrape LinkedIn only with AI-powered active recruitment filtering"""
         all_jobs = []
         
-        print("🚀 Starting Comprehensive Multi-Source Job Search...")
+        print("🚀 Starting Time-Based LinkedIn Job Search...")
         print("=" * 70)
-        print("📊 Sources: Indeed, LinkedIn, Glassdoor, Monster, ZipRecruiter, CareerBuilder + APIs")
+        print("📊 Source: LinkedIn")
+        if filter_active:
+            print("⏰ Time Filter: Jobs posted within last 48 hours only")
         print("=" * 70)
         
-        # Use ThreadPoolExecutor for parallel scraping of major sources
-        with ThreadPoolExecutor(max_workers=6) as executor:
-            futures = []
-            
-            # Submit scraping tasks for all major job sites
-            futures.append(executor.submit(self.scrape_indeed_comprehensive, search_term, location, 10))
-            futures.append(executor.submit(self.scrape_linkedin_comprehensive, search_term, location, 5))
-            futures.append(executor.submit(self.scrape_glassdoor_comprehensive, search_term, location, 3))
-            futures.append(executor.submit(self.scrape_monster_comprehensive, search_term, location, 3))
-            futures.append(executor.submit(self.scrape_ziprecruiter_comprehensive, search_term, location, 3))
-            futures.append(executor.submit(self.scrape_careerbuilder_comprehensive, search_term, location, 3))
-            
-            # Collect results from all sources
-            source_results = {}
-            for future in as_completed(futures):
-                try:
-                    jobs = future.result()
-                    all_jobs.extend(jobs)
-                    # Track which source provided how many jobs
-                    if jobs:
-                        source = jobs[0].get('source', 'Unknown')
-                        source_results[source] = len(jobs)
-                except Exception as e:
-                    print(f"❌ Error in parallel scraping: {e}")
+        # Scrape LinkedIn with AI filtering
+        linkedin_jobs = self.scrape_linkedin_comprehensive(search_term, location, 10, fetch_descriptions, filter_active)
+        all_jobs.extend(linkedin_jobs)
         
-        # Scrape APIs separately (lighter weight)
-        print("\n🔗 Scraping additional API sources...")
-        api_jobs = self.scrape_remote_apis(search_term, location)
-        all_jobs.extend(api_jobs)
-        if api_jobs:
-            source_results['APIs'] = len(api_jobs)
-        
-        # Summary of results by source
-        print(f"\n📈 MULTI-SOURCE SCRAPING SUMMARY:")
+        # Summary of results
+        print(f"\n📈 LINKEDIN SCRAPING SUMMARY:")
         print("-" * 50)
-        total_jobs = 0
-        for source, count in source_results.items():
-            print(f"   • {source}: {count} jobs")
-            total_jobs += count
+        total_jobs = len(all_jobs)
+        print(f"   • LinkedIn: {total_jobs} jobs")
+        if filter_active:
+            print("   • AI-filtered for active recruitment")
         print("-" * 50)
         print(f"   🎯 TOTAL JOBS FOUND: {total_jobs}")
         print("=" * 70)
@@ -1387,10 +1030,114 @@ class PerfectJobScraper:
         return df, ai_insights
     
     def close_driver(self):
-        """Close the web driver"""
-        if self.driver:
-            self.driver.quit()
-            self.driver = None
+        """No driver to close - using requests only"""
+        pass
+    
+    def is_recently_posted(self, posting_date_text):
+        """Check if a job was posted within the last 48 hours"""
+        if not posting_date_text or posting_date_text == "Not specified":
+            return False, "No posting date available"
+        
+        try:
+            text = posting_date_text.lower().strip()
+            current_time = time.time()
+            
+            # Handle "just posted" or "today"
+            if 'just posted' in text or 'today' in text:
+                return True, "Posted today"
+            
+            # Handle "yesterday"
+            if 'yesterday' in text:
+                return True, "Posted yesterday (within 48 hours)"
+            
+            # Handle hours ago
+            hours_match = re.search(r'(\d+)\s*(?:hour|hr)s?\s*ago', text)
+            if hours_match:
+                hours = int(hours_match.group(1))
+                if hours <= 48:
+                    return True, f"Posted {hours} hours ago"
+                else:
+                    return False, f"Posted {hours} hours ago (too old)"
+            
+            # Handle days ago
+            days_match = re.search(r'(\d+)\s*(?:day|d)s?\s*ago', text)
+            if days_match:
+                days = int(days_match.group(1))
+                if days <= 2:
+                    return True, f"Posted {days} days ago"
+                else:
+                    return False, f"Posted {days} days ago (too old)"
+            
+            # Handle weeks/months/years (definitely too old)
+            if any(word in text for word in ['week', 'month', 'year']):
+                return False, "Posted more than 2 days ago"
+            
+            # If we can't parse it but it looks recent
+            if any(word in text for word in ['now', 'recent', 'new']):
+                return True, "Appears to be recently posted"
+            
+            return False, f"Could not determine recency: {posting_date_text}"
+            
+        except Exception as e:
+            return False, f"Error parsing date: {e}"
+    
+    def keyword_based_active_filter(self, job_data):
+        """Enhanced keyword-based filtering for active recruitment with smarter detection"""
+        text_to_check = ""
+        if job_data.get('title'):
+            text_to_check += job_data['title'].lower() + " "
+        if job_data.get('company'):
+            text_to_check += job_data['company'].lower() + " "
+        if job_data.get('summary'):
+            text_to_check += job_data['summary'].lower() + " "
+        
+        # Primary active recruitment keywords (high confidence)
+        primary_keywords = [
+            'actively recruiting', 'actively hiring', 'urgent hiring', 'immediate hiring',
+            'hiring now', 'we are hiring', 'join our team', 'growing team', 'expanding team',
+            'new positions', 'multiple openings', 'open positions', 'career opportunities',
+            'rapidly growing', 'fast growing', 'scaling', 'expansion', 'growth opportunity',
+            'apply now', 'immediate start', 'start immediately', 'join immediately',
+            'series a', 'series b', 'series c', 'funding', 'new office', 'competitive salary'
+        ]
+        
+        # Secondary indicators (medium confidence) - time-sensitive and momentum signals
+        secondary_keywords = [
+            'deadline', 'apply by', 'closing date', 'closing soon', 'time sensitive',
+            'asap', 'urgently', 'quickly', 'immediate', 'now hiring', 'current opening',
+            'excellent benefits', 'great benefits', 'full benefits', 'work life balance',
+            'professional development', 'career growth', 'advancement opportunity',
+            'exciting opportunity', 'fantastic opportunity', 'unique opportunity',
+            'be part of', 'join us', 'we\'re looking for', 'we are looking for'
+        ]
+        
+        # Check primary keywords first
+        for keyword in primary_keywords:
+            if keyword in text_to_check:
+                return True, f"Primary indicator: {keyword}"
+        
+        # Check for combinations of secondary keywords (2 or more = likely active)
+        secondary_matches = []
+        for keyword in secondary_keywords:
+            if keyword in text_to_check:
+                secondary_matches.append(keyword)
+        
+        if len(secondary_matches) >= 2:
+            return True, f"Multiple indicators: {', '.join(secondary_matches[:3])}"
+        
+        # Check for deadline patterns specifically
+        deadline_patterns = [
+            r'deadline[:\s]*\d{1,2}[-/]\d{1,2}[-/]\d{2,4}',
+            r'apply by[:\s]*\d{1,2}[-/]\d{1,2}[-/]\d{2,4}',
+            r'closing[:\s]*\d{1,2}[-/]\d{1,2}[-/]\d{2,4}',
+            r'until[:\s]*\d{1,2}[-/]\d{1,2}[-/]\d{2,4}'
+        ]
+        
+        for pattern in deadline_patterns:
+            if re.search(pattern, text_to_check, re.IGNORECASE):
+                return True, "Contains deadline/application date"
+        
+        return False, "No clear active recruitment indicators found"
 
 def get_search_criteria():
     """Get comprehensive search criteria from user"""
@@ -1418,28 +1165,48 @@ def get_search_criteria():
     return search_term, location, keywords
 
 def run_perfect_job_scraper():
-    """AI-ENHANCED: Run the perfect job scraper with AI agents"""
-    print("🤖 AI-ENHANCED Ultimate Job Search Engine")
+    """AI-ENHANCED: Run the LinkedIn job scraper with AI agents"""
+    print("🤖 AI-ENHANCED LinkedIn Job Search Engine")
     print("=" * 80)
     print("🎯 AI Features:")
     print("   • CrewAI agents for intelligent job analysis")
     print("   • AI-powered relevance scoring and ranking")
     print("   • Smart market insights generation")
     print("   • AI career growth potential analysis")
-    print("   • Parallel processing for maximum speed")
+    print("   • Time-based filtering (0-48 hours) for truly active jobs")
     print("")
-    print("🌐 Job Sources (9+ Platforms):")
-    print("   • Major Sites: Indeed, LinkedIn, Glassdoor, Monster, ZipRecruiter, CareerBuilder")
-    print("   • APIs: Remotive, GitHub Jobs, RemoteOK, WeWorkRemotely, AngelList, Dice")
-    print("   • Comprehensive pagination (up to 10 pages per source)")
+    print("🌐 Job Source: LinkedIn")
+    print("   • Comprehensive pagination (up to 10 pages)")
+    print("   • Time-based filtering for fresh job postings")
     print("=" * 80)
     
     # Get search criteria
     search_term, location, keywords = get_search_criteria()
     
+    # Check if Gemini API key is available
+    api_key_available = os.environ.get('GOOGLE_API_KEY') is not None
+    
     # Ask user about AI features
-    use_ai = input("\n🤖 Enable AI-enhanced analysis? (y/n, default=y): ").strip().lower()
-    use_ai = use_ai != 'n'  # Default to yes
+    if api_key_available:
+        # Configure Gemini API
+        genai.configure(api_key=os.environ.get('GOOGLE_API_KEY'))
+        # Configure LiteLLM to use Gemini
+        os.environ['LITELLM_MODEL'] = 'gemini/gemini-1.5-flash'
+        litellm.api_key = os.environ.get('GOOGLE_API_KEY')
+        use_ai = input("\n🤖 Enable AI-enhanced analysis? (y/n, default=y): ").strip().lower()
+        use_ai = use_ai != 'n'  # Default to yes
+    else:
+        print("⚠️  Google Gemini API key not found. AI features will be disabled.")
+        print("💡 To enable AI features, set your GOOGLE_API_KEY environment variable:")
+        print("   export GOOGLE_API_KEY='your-gemini-api-key-here'")
+        use_ai = input("\n🤖 Enable AI-enhanced analysis anyway? (y/n, default=n): ").strip().lower()
+        use_ai = use_ai == 'y'  # Default to no
+    
+    if use_ai and not api_key_available:
+        print("⚠️  Google Gemini API key not found.")
+        print("💡 AI features will use traditional scoring methods instead.")
+        print("🔄 Continuing with enhanced analysis using traditional algorithms...")
+        # Don't disable use_ai - let it use traditional methods
     
     if use_ai:
         print("✅ AI agents activated for enhanced job analysis!")
@@ -1450,12 +1217,24 @@ def run_perfect_job_scraper():
     scraper = PerfectJobScraper()
     
     try:
-        # Scrape all sources
-        all_jobs = scraper.scrape_all_sources(search_term, location, keywords)
+        # Ask user about full description fetching (for faster testing)
+        fetch_descriptions = input("\n📄 Fetch full job descriptions? (y/n, default=y): ").strip().lower()
+        fetch_descriptions = fetch_descriptions != 'n'  # Default to yes
         
-        if not all_jobs:
-            print("❌ No jobs found. Try different search criteria.")
-            return
+        if not fetch_descriptions:
+            print("⚡ Skipping full description fetching for faster results...")
+        
+        # Ask user if they want AI-powered filtering for actively recruiting jobs
+        filter_active = input("\n🎯 Filter for jobs posted within last 48 hours only? (y/n, default=y): ").strip().lower()
+        filter_active = filter_active != 'n'  # Default to yes
+        
+        if filter_active:
+            print("⏰ Time-based filtering enabled - only jobs posted in last 48 hours will be scraped!")
+        else:
+            print("📊 Scraping all jobs (no time-based filtering)...")
+        
+        # Scrape all sources with AI filtering
+        all_jobs = scraper.scrape_all_sources(search_term, location, keywords, fetch_descriptions, filter_active)
         
         # AI-ENHANCED: Process and rank jobs with AI insights
         ranked_jobs_df, ai_insights = scraper.process_and_rank_jobs(all_jobs, keywords, location, use_ai)
@@ -1470,7 +1249,8 @@ def run_perfect_job_scraper():
         
         # Reorder columns for better readability with salary prominence
         base_columns = ['rank', 'relevance_score', 'title', 'company', 'location', 'salary', 'salary_numeric',
-                       'job_type', 'summary', 'url', 'source', 'scraped_at']
+                       'job_type', 'summary', 'full_description', 'is_actively_recruiting', 'active_recruiting_reasons',
+                       'url', 'source', 'scraped_at']
         
         # Add AI columns if available
         if use_ai and 'ai_career_score' in ranked_jobs_df.columns:
@@ -1562,6 +1342,11 @@ def run_perfect_job_scraper():
         
         print(f"   • Remote jobs: {len(ranked_jobs_df[ranked_jobs_df['location'].str.contains('remote', case=False, na=False)])}")
         
+        # Actively recruiting statistics
+        if 'is_actively_recruiting' in ranked_jobs_df.columns:
+            active_jobs = len(ranked_jobs_df[ranked_jobs_df['is_actively_recruiting'] == True])
+            print(f"   • Actively recruiting jobs: {active_jobs} ({active_jobs/len(ranked_jobs_df)*100:.1f}%)")
+        
         # Top companies
         top_companies = ranked_jobs_df['company'].value_counts().head(5)
         print(f"   • Top companies: {', '.join(top_companies.index.tolist())}")
@@ -1581,6 +1366,10 @@ def run_perfect_job_scraper():
         print(f"   • Salary-based ranking and scoring")
         print(f"   • Comprehensive salary statistics and analysis")
         print(f"   • Salary competitiveness assessment in AI scoring")
+        if filter_active:
+            print(f"   • ⏰ Time-based filtering: Only jobs posted within last 48 hours")
+        else:
+            print(f"   • 📊 Comprehensive job scraping (all jobs included)")
         print(f"📄 Complete results saved to: '{filename}'")
         print(f"💡 Tip: Sort by 'salary_numeric' column for salary-based ranking!")
         
