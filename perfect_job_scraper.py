@@ -1248,16 +1248,12 @@ def run_perfect_job_scraper():
         filename = f"ai_jobs_{search_term.replace(' ', '_').lower()}_{location.replace(' ', '_').lower()}_{timestamp}.csv"
         
         # Reorder columns for better readability with salary prominence
-        base_columns = ['rank', 'relevance_score', 'title', 'company', 'location', 'salary', 'salary_numeric',
+        base_columns = ['rank', 'title', 'company', 'location', 'salary', 'salary_numeric',
                        'job_type', 'summary', 'full_description', 'is_actively_recruiting', 'active_recruiting_reasons',
                        'url', 'source', 'scraped_at']
-        
-        # Add AI columns if available
-        if use_ai and 'ai_career_score' in ranked_jobs_df.columns:
-            ai_columns = ['ai_career_score', 'final_ai_score', 'ai_rank']
-            column_order = base_columns[:2] + ai_columns + base_columns[2:]
-        else:
-            column_order = base_columns
+
+        # Use only base columns (no AI columns)
+        column_order = base_columns
             
         available_columns = [col for col in column_order if col in ranked_jobs_df.columns]
         ranked_jobs_df = ranked_jobs_df[available_columns]
@@ -1282,40 +1278,24 @@ def run_perfect_job_scraper():
         if use_ai:
             print(f"🧠 AI insights saved to: {insights_filename}")
         
-        # Show top 15 results with AI scores and salary
-        print(f"\n🥇 TOP 15 MOST RELEVANT JOBS (Salary-Enhanced Ranking):")
-        print("-" * 140)
-        if use_ai and 'final_ai_score' in ranked_jobs_df.columns:
-            print(f"{'Rank':<4} {'AI Score':<8} {'Career':<6} {'Title':<30} {'Company':<20} {'Location':<15} {'Salary':<20}")
-        else:
-            print(f"{'Rank':<4} {'Score':<6} {'Title':<30} {'Company':<20} {'Location':<15} {'Salary':<20}")
-        print("-" * 140)
-        
+        # Show top 15 results
+        print(f"\n🥇 TOP 15 MOST RELEVANT JOBS:")
+        print("-" * 100)
+        print(f"{'Rank':<4} {'Title':<30} {'Company':<20} {'Location':<15} {'Salary':<20}")
+        print("-" * 100)
+
         for _, job in ranked_jobs_df.head(15).iterrows():
             title = job['title'][:27] + "..." if len(job['title']) > 27 else job['title']
             company = job['company'][:17] + "..." if len(job['company']) > 17 else job['company']
             location_str = job['location'][:12] + "..." if len(job['location']) > 12 else job['location']
             salary_str = job['salary'][:17] + "..." if len(str(job['salary'])) > 17 else str(job['salary'])
-            
-            if use_ai and 'final_ai_score' in ranked_jobs_df.columns:
-                ai_score = job.get('final_ai_score', job['relevance_score'])
-                career_score = job.get('ai_career_score', 0)
-                print(f"{job['rank']:<4} {ai_score:<8.1f} {career_score:<6} {title:<30} {company:<20} {location_str:<15} {salary_str:<20}")
-            else:
-                print(f"{job['rank']:<4} {job['relevance_score']:<6} {title:<30} {company:<20} {location_str:<15} {salary_str:<20}")
+
+            print(f"{job['rank']:<4} {title:<30} {company:<20} {location_str:<15} {salary_str:<20}")
         
-        # Enhanced statistics with AI insights and salary data
-        print(f"\n📈 ENHANCED SEARCH STATISTICS (With Salary Analysis):")
+        # Enhanced statistics with salary data
+        print(f"\n📈 SEARCH STATISTICS:")
         print(f"   • Sources used: {', '.join(ranked_jobs_df['source'].unique())}")
-        
-        if use_ai and 'final_ai_score' in ranked_jobs_df.columns:
-            print(f"   • Average AI score: {ranked_jobs_df['final_ai_score'].mean():.1f}")
-            print(f"   • Highest AI score: {ranked_jobs_df['final_ai_score'].max():.1f}")
-            if 'ai_career_score' in ranked_jobs_df.columns:
-                print(f"   • Average career potential: {ranked_jobs_df['ai_career_score'].mean():.1f}")
-        else:
-            print(f"   • Average relevance score: {ranked_jobs_df['relevance_score'].mean():.1f}")
-            print(f"   • Highest score: {ranked_jobs_df['relevance_score'].max()}")
+        print(f"   • Total jobs found: {len(ranked_jobs_df)}")
         
         # Salary statistics
         jobs_with_salary = ranked_jobs_df[ranked_jobs_df['salary'] != 'Not specified']
@@ -1360,18 +1340,17 @@ def run_perfect_job_scraper():
             print(preview)
             print(f"\n📄 Full AI insights available in: {insights_filename}")
         
-        print(f"\n✅ 💰 SALARY-ENHANCED AI Job Search Completed!")
-        print(f"📊 Features Added:")
-        print(f"   • Enhanced salary extraction from all job sites")
-        print(f"   • Salary-based ranking and scoring")
-        print(f"   • Comprehensive salary statistics and analysis")
-        print(f"   • Salary competitiveness assessment in AI scoring")
+        print(f"\n✅ Job Search Completed!")
+        print(f"📊 Features:")
+        print(f"   • Time-based filtering for fresh jobs")
+        print(f"   • Comprehensive job data extraction")
+        print(f"   • Clean CSV output with essential information")
         if filter_active:
-            print(f"   • ⏰ Time-based filtering: Only jobs posted within last 7 days")
+            print(f"   • ⏰ Only jobs posted within last 7 days")
         else:
             print(f"   • 📊 Comprehensive job scraping (all jobs included)")
-        print(f"📄 Complete results saved to: '{filename}'")
-        print(f"💡 Tip: Sort by 'salary_numeric' column for salary-based ranking!")
+        print(f"📄 Results saved to: '{filename}'")
+        print(f"💡 Focus: Quality job opportunities with complete information")
         
     except Exception as e:
         print(f"❌ Error during AI-enhanced scraping: {e}")
